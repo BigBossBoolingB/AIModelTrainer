@@ -1,0 +1,55 @@
+# General Training Configuration
+training:
+  # Default dataset and model to run if not specified.
+  # Can be overridden by command-line arguments for quick tests.
+  default_dataset: CIFAR10
+  default_model: resnet50
+  # Default number of epochs.
+  epochs: 5
+  # Default learning rate.
+  lr: 0.001
+  # Default batch size.
+  batch_size: 128
+
+# Dataset-specific configurations
+datasets:
+  MNIST:
+    num_classes: 10
+    # Resizing to 224x224 and converting to 3 channels to be compatible with ResNet
+    transform:
+      - name: Grayscale
+        params: { num_output_channels: 3 }
+      - name: Resize
+        params: { size: 224 }
+      - name: ToTensor
+      - name: Normalize
+        params: { mean: [0.1307], std: [0.3081] }
+  CIFAR10:
+    num_classes: 10
+    transform:
+      - name: Resize
+        params: { size: 224 }
+      - name: ToTensor
+      - name: Normalize
+        params: { mean: [0.5, 0.5, 0.5], std: [0.5, 0.5, 0.5] }
+
+# Acural Recursion specific configurations
+acural_recursion:
+  MNIST:
+    initial_pool_size: 500
+    epochs_per_iteration: 2
+    max_iterations: 5
+    analysis_pool_size: 10000
+    entropy_threshold: 1.6
+    high_loss_k_percent: 5
+    uniqueness_n_clusters: 20
+    uniqueness_similarity_threshold: 0.96
+  CIFAR10:
+    initial_pool_size: 1000
+    epochs_per_iteration: 2
+    max_iterations: 4
+    analysis_pool_size: 10000
+    entropy_threshold: 2.0
+    high_loss_k_percent: 10
+    uniqueness_n_clusters: 50
+    uniqueness_similarity_threshold: 0.98

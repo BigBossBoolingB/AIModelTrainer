@@ -9,27 +9,34 @@ from sklearn.cluster import KMeans
 from scipy.stats import entropy
 import warnings
 import argparse
+import yaml
+import logging
 
-# Import our model factory
 from models import get_model
+from utils import setup_logging
 
-# Suppress KMeans warning about n_init
 warnings.filterwarnings("ignore", category=FutureWarning, module="sklearn.cluster._kmeans")
 
-def get_config():
-    """Parses command-line arguments."""
-    parser = argparse.ArgumentParser(description='Acural Recursion trainer.')
-    parser.add_argument('--dataset', type=str, default='CIFAR10', choices=['MNIST', 'CIFAR10'],
-                        help='The dataset to use.')
-    parser.add_argument('--model', type=str, default='resnet50',
-                        help='The model architecture to use.')
-    return parser.parse_args()
+def load_config():
+    with open('config.yaml', 'r') as f:
+        return yaml.safe_load(f)
+
+def build_transforms(transform_config):
+    transform_list = []
+    for t_config in transform_config:
+        t_name = t_config['name']
+        t_params = t_config.get('params', {})
+        if hasattr(transforms, t_name):
+            transform_list.append(getattr(transforms, t_name)(**t_params))
+        else:
+            raise ValueError(f"Transform {t_name} not recognized")
+    return transforms.Compose(transform_list)
 
 # --- Heuristic Filter Implementations (no changes needed) ---
 def get_low_confidence_indices(model, dataset, device, entropy_threshold):
     model.eval()
     indices = []
-    loader = DataLoader(dataset, batch_size=256, shuffle=False, num_workers=2)
+    loader = DataLoader(dataset, batch_size=512, shuffle=False, num_workers=2)
     with torch.no_grad():
         for i, (images, _) in enumerate(loader):
             images = images.to(device)
@@ -46,7 +53,7 @@ def get_low_confidence_indices(model, dataset, device, entropy_threshold):
 def get_high_loss_indices(model, dataset, device, criterion, k_percent):
     model.eval()
     losses, original_indices_map = [], []
-    loader = DataLoader(dataset, batch_size=256, shuffle=False, num_workers=2)
+    loader = DataLoader(dataset, batch_size=512, shuffle=False, num_workers=2)
     with torch.no_grad():
         for i, (images, labels) in enumerate(loader):
             images, labels = images.to(device), labels.to(device)
@@ -62,7 +69,7 @@ def get_high_loss_indices(model, dataset, device, criterion, k_percent):
 def get_unique_indices(model, pool_dataset, candidate_dataset, device, n_clusters, similarity_threshold):
     model.eval()
     pool_features_list = []
-    pool_loader = DataLoader(pool_dataset, batch_size=256, shuffle=False, num_workers=2)
+    pool_loader = DataLoader(pool_dataset, batch_size=512, shuffle=False, num_workers=2)
     with torch.no_grad():
         for images, _ in pool_loader:
             pool_features_list.append(model.get_features(images).cpu().numpy())
@@ -75,7 +82,7 @@ def get_unique_indices(model, pool_dataset, candidate_dataset, device, n_cluster
         centroids = torch.tensor(kmeans.cluster_centers_).to(device)
 
     indices = []
-    candidate_loader = DataLoader(candidate_dataset, batch_size=256, shuffle=False, num_workers=2)
+    candidate_loader = DataLoader(candidate_dataset, batch_size=512, shuffle=False, num_workers=2)
     cos = nn.CosineSimilarity(dim=1, eps=1e-6)
     with torch.no_grad():
         for i, (images, _) in enumerate(candidate_loader):
@@ -100,71 +107,46 @@ def evaluate_model(model, test_loader, device):
             correct += (predicted == labels).sum().item()
     return 100 * correct / total
 
-def run_acural_recursion(args):
+def run_acural_recursion(config, dataset_name, model_name, logger):
     """Main function to run the Acural Recursion training loop."""
-    print(f"--- Starting Acural Recursion for {args.dataset} with model {args.model} ---")
+    logger.info(f"--- Starting Acural Recursion for {dataset_name} with model {model_name} ---")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    logger.info(f"Using device: {device}")
 
-    # --- Dataset-specific Configurations ---
-    configs = {
-        'MNIST': {
-            'model_name': 'MNIST_CNN',
-            'dataset_loader': torchvision.datasets.MNIST,
-            'transform': transforms.Compose([transforms.Resize(224), transforms.Grayscale(3), transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))]),
-            'num_classes': 10, 'initial_pool_size': 500, 'epochs_per_iteration': 2, 'max_iterations': 5,
-            'analysis_pool_size': 10000, 'entropy_threshold': 1.6, 'high_loss_k_percent': 5,
-            'uniqueness_n_clusters': 20, 'uniqueness_similarity_threshold': 0.96,
-            'baseline_accuracy': 98.97
-        },
-        'CIFAR10': {
-            'model_name': args.model, # Use model from args
-            'dataset_loader': torchvision.datasets.CIFAR10,
-            'transform': transforms.Compose([transforms.Resize(224), transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]),
-            'num_classes': 10, 'initial_pool_size': 1000, 'epochs_per_iteration': 2, 'max_iterations': 4,
-            'analysis_pool_size': 10000, 'entropy_threshold': 2.0, 'high_loss_k_percent': 10,
-            'uniqueness_n_clusters': 50, 'uniqueness_similarity_threshold': 0.98,
-            'baseline_accuracy': 71.42 # This will be updated after the new baseline run
-        }
-    }
-    config = configs[args.dataset]
+    # --- Get configs ---
+    train_cfg = config['training']
+    dataset_cfg = config['datasets'][dataset_name]
+    acural_cfg = config['acural_recursion'][dataset_name]
 
     # --- Data Loading ---
-    full_train_dataset = config['dataset_loader'](root='./data', train=True, download=True, transform=config['transform'])
-    test_dataset = config['dataset_loader'](root='./data', train=False, download=True, transform=config['transform'])
-    test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False, num_workers=2)
+    transform = build_transforms(dataset_cfg['transform'])
+    dataset_loader = getattr(torchvision.datasets, dataset_name)
+    full_train_dataset = dataset_loader(root='./data', train=True, download=True, transform=transform)
+    test_dataset = dataset_loader(root='./data', train=False, download=True, transform=transform)
+    test_loader = DataLoader(test_dataset, batch_size=train_cfg['batch_size'], shuffle=False, num_workers=2)
 
     # --- Initialization ---
-    model = get_model(config['model_name'], num_classes=config['num_classes'], pretrained=True).to(device)
+    model = get_model(model_name, num_classes=dataset_cfg['num_classes'], pretrained=True).to(device)
     criterion = nn.CrossEntropyLoss(reduction='none')
-
-    params_to_train = [p for p in model.parameters() if p.requires_grad]
-    optimizer = optim.Adam(params_to_train, lr=0.001)
+    optimizer = optim.Adam([p for p in model.parameters() if p.requires_grad], lr=train_cfg['lr'])
 
     all_indices = list(range(len(full_train_dataset)))
     np.random.seed(42)
     np.random.shuffle(all_indices)
 
-    pool_indices = all_indices[:config['initial_pool_size']]
-    candidate_indices = all_indices[config['initial_pool_size']:]
-    print(f"Initial pool size: {len(pool_indices)}, Candidate pool size: {len(candidate_indices)}")
+    pool_indices = all_indices[:acural_cfg['initial_pool_size']]
+    candidate_indices = all_indices[acural_cfg['initial_pool_size']:]
+    logger.info(f"Initial pool size: {len(pool_indices)}, Candidate pool size: {len(candidate_indices)}")
 
     # --- Main Loop ---
-    for iteration in range(config['max_iterations']):
-        print(f"\n--- Iteration {iteration + 1}/{config['max_iterations']} ---")
+    for iteration in range(acural_cfg['max_iterations']):
+        logger.info(f"\n--- Iteration {iteration + 1}/{acural_cfg['max_iterations']} ---")
         pool_dataset = Subset(full_train_dataset, pool_indices)
 
-        print(f"Training on current pool of {len(pool_indices)} samples...")
+        logger.info(f"Training on current pool of {len(pool_indices)} samples...")
         model.train()
-        # Ensure only the intended layers are trainable
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                param.requires_grad = True # This seems redundant, but ensures only head is trained
-            else:
-                param.requires_grad = False
-
-        pool_loader = DataLoader(pool_dataset, batch_size=32, shuffle=True, num_workers=2)
-        for _ in range(config['epochs_per_iteration']):
+        pool_loader = DataLoader(pool_dataset, batch_size=train_cfg['batch_size'], shuffle=True, num_workers=2)
+        for _ in range(acural_cfg['epochs_per_iteration']):
             for images, labels in pool_loader:
                 images, labels = images.to(device), labels.to(device)
                 optimizer.zero_grad()
@@ -173,35 +155,53 @@ def run_acural_recursion(args):
                 loss.backward()
                 optimizer.step()
 
-        if not candidate_indices: break
+        if not candidate_indices:
+            logger.info("Candidate pool is empty. Finalizing training.")
+            break
 
-        analysis_indices = np.random.choice(candidate_indices, min(len(candidate_indices), config['analysis_pool_size']), replace=False).tolist()
+        analysis_indices = np.random.choice(candidate_indices, min(len(candidate_indices), acural_cfg['analysis_pool_size']), replace=False).tolist()
         analysis_dataset = Subset(full_train_dataset, analysis_indices)
-        print(f"Analyzing a random subset of {len(analysis_indices)} candidates...")
+        logger.info(f"Analyzing a random subset of {len(analysis_indices)} candidates...")
 
-        low_conf_idx = get_low_confidence_indices(model, analysis_dataset, device, config['entropy_threshold'])
-        high_loss_idx = get_high_loss_indices(model, analysis_dataset, device, criterion, config['high_loss_k_percent'])
-        unique_idx = get_unique_indices(model, pool_dataset, analysis_dataset, device, config['uniqueness_n_clusters'], config['uniqueness_similarity_threshold'])
+        low_conf_idx = get_low_confidence_indices(model, analysis_dataset, device, acural_cfg['entropy_threshold'])
+        high_loss_idx = get_high_loss_indices(model, analysis_dataset, device, criterion, acural_cfg['high_loss_k_percent'])
+        unique_idx = get_unique_indices(model, pool_dataset, analysis_dataset, device, acural_cfg['uniqueness_n_clusters'], acural_cfg['uniqueness_similarity_threshold'])
 
         new_indices = set(low_conf_idx) | set(high_loss_idx) | set(unique_idx)
-        print(f"Selected {len(new_indices)} new data points.")
+        logger.info(f"Selected {len(new_indices)} new data points.")
 
-        if not new_indices: break
+        if not new_indices:
+            logger.info("No new data points selected. Ending training early.")
+            break
 
         pool_indices.extend(list(new_indices))
         candidate_indices = [idx for idx in candidate_indices if idx not in new_indices]
 
         accuracy = evaluate_model(model, test_loader, device)
-        print(f"Iteration {iteration + 1} | Pool Size: {len(pool_indices)} | Test Accuracy: {accuracy:.2f}%")
+        logger.info(f"Iteration {iteration + 1} | Pool Size: {len(pool_indices)} | Test Accuracy: {accuracy:.2f}%")
 
     # --- Final Evaluation ---
     final_accuracy = evaluate_model(model, test_loader, device)
-    print(f'\n==================================================')
-    print(f'Final Test Accuracy for {args.model} on {args.dataset}: {final_accuracy:.2f}%')
-    print(f'Using {len(pool_indices)} / {len(full_train_dataset)} training samples.')
-    print(f"Baseline Accuracy was: {config['baseline_accuracy']}%")
-    print(f'==================================================')
+    logger.info(f'\n==================================================')
+    logger.info(f'Final Test Accuracy for {model_name} on {dataset_name}: {final_accuracy:.2f}%')
+    logger.info(f'Using {len(pool_indices)} / {len(full_train_dataset)} training samples.')
+    logger.info(f'==================================================')
 
 if __name__ == '__main__':
-    args = get_config()
-    run_acural_recursion(args)
+    logger = setup_logging()
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--dataset', type=str, help='Dataset to use (e.g., CIFAR10). Overrides config.')
+    parser.add_argument('--model', type=str, help='Model to use (e.g., resnet50). Overrides config.')
+    cli_args = parser.parse_args()
+
+    try:
+        config = load_config()
+
+        dataset_name = cli_args.dataset if cli_args.dataset else config['training']['default_dataset']
+        model_name = cli_args.model if cli_args.model else config['training']['default_model']
+
+        run_acural_recursion(config, dataset_name, model_name, logger)
+    except Exception as e:
+        logger.error(f"An error occurred during execution: {e}", exc_info=True)
+        raise

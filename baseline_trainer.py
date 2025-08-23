@@ -5,82 +5,65 @@ import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 import argparse
+import yaml
+import logging
 
-# Import our model factory
 from models import get_model
+from utils import setup_logging
 
-def get_config():
-    """Parses command-line arguments."""
-    parser = argparse.ArgumentParser(description='Baseline model trainer for various datasets and models.')
-    parser.add_argument('--dataset', type=str, default='CIFAR10', choices=['MNIST', 'CIFAR10'],
-                        help='The dataset to use.')
-    parser.add_argument('--model', type=str, default='resnet50',
-                        help='The model architecture to use (e.g., MNIST_CNN, CIFAR10_CNN, resnet50).')
-    parser.add_argument('--epochs', type=int, default=1,
-                        help='Number of training epochs.')
-    parser.add_argument('--lr', type=float, default=0.001,
-                        help='Learning rate.')
-    parser.add_argument('--batch_size', type=int, default=128,
-                        help='Batch size for training.')
-    return parser.parse_args()
+def load_config():
+    """Loads the YAML configuration file."""
+    with open('config.yaml', 'r') as f:
+        return yaml.safe_load(f)
 
-def train_and_evaluate(args):
+def build_transforms(transform_config):
+    """Builds a torchvision.transforms.Compose object from a config list."""
+    transform_list = []
+    for t_config in transform_config:
+        t_name = t_config['name']
+        t_params = t_config.get('params', {})
+        if hasattr(transforms, t_name):
+            transform_list.append(getattr(transforms, t_name)(**t_params))
+        else:
+            raise ValueError(f"Transform {t_name} not recognized in torchvision.transforms")
+    return transforms.Compose(transform_list)
+
+def train_and_evaluate(config, dataset_name, model_name, logger):
     """
-    Trains and evaluates a baseline model on the specified dataset.
+    Trains and evaluates a baseline model on the specified dataset using settings from the config.
     """
-    print(f"--- Starting Baseline Training: Model={args.model}, Dataset={args.dataset} ---")
+    logger.info(f"--- Starting Baseline Training: Model={model_name}, Dataset={dataset_name} ---")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    logger.info(f"Using device: {device}")
+
+    # --- Get configs ---
+    train_cfg = config['training']
+    dataset_cfg = config['datasets'][dataset_name]
 
     # --- Data Loading and Transformation ---
-    if args.dataset == 'MNIST':
-        # MNIST specific transforms and data loader
-        transform = transforms.Compose([
-            transforms.Grayscale(num_output_channels=3), # ResNet expects 3 channels
-            transforms.Resize(224), # ResNet expects 224x224 images
-            transforms.ToTensor(),
-            transforms.Normalize((0.1307,), (0.3081,))
-        ])
-        dataset_loader = torchvision.datasets.MNIST
-        num_classes = 10
-    elif args.dataset == 'CIFAR10':
-        # CIFAR-10 specific transforms and data loader
-        transform = transforms.Compose([
-            transforms.Resize(224), # ResNet expects 224x224 images
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-        ])
-        dataset_loader = torchvision.datasets.CIFAR10
-        num_classes = 10
-    else:
-        raise ValueError("Invalid dataset specified")
+    transform = build_transforms(dataset_cfg['transform'])
+    dataset_loader = getattr(torchvision.datasets, dataset_name)
 
     train_dataset = dataset_loader(root='./data', train=True, download=True, transform=transform)
     test_dataset = dataset_loader(root='./data', train=False, download=True, transform=transform)
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=2)
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=2)
-    print("Dataset loaded.")
+    train_loader = DataLoader(train_dataset, batch_size=train_cfg['batch_size'], shuffle=True, num_workers=2)
+    test_loader = DataLoader(test_dataset, batch_size=train_cfg['batch_size'], shuffle=False, num_workers=2)
+    logger.info("Dataset loaded.")
 
     # --- Model Initialization ---
-    # Use our factory to get the right model
-    model = get_model(args.model, num_classes=num_classes, pretrained=True).to(device)
-    print(f"Model {args.model} loaded.")
+    model = get_model(model_name, num_classes=dataset_cfg['num_classes'], pretrained=True).to(device)
+    logger.info(f"Model {model_name} loaded.")
 
     # --- Optimizer Setup for Fine-Tuning ---
-    # We only want to train the parameters of the final, newly-added layer.
-    params_to_train = []
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            params_to_train.append(param)
-            print(f"\tTraining parameter: {name}")
-
+    params_to_train = [p for p in model.parameters() if p.requires_grad]
+    logger.info(f"Found {len(params_to_train)} trainable parameters.")
+    optimizer = optim.Adam(params_to_train, lr=train_cfg['lr'])
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(params_to_train, lr=args.lr)
 
     # --- Training Loop ---
-    print("Starting training...")
-    for epoch in range(args.epochs):
+    logger.info(f"Starting training for {train_cfg['epochs']} epochs...")
+    for epoch in range(train_cfg['epochs']):
         model.train()
         running_loss = 0.0
         for i, (images, labels) in enumerate(train_loader):
@@ -91,10 +74,10 @@ def train_and_evaluate(args):
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
-        print(f"Epoch [{epoch+1}/{args.epochs}] complete. Average Loss: {running_loss / len(train_loader):.4f}")
+        logger.info(f"Epoch [{epoch+1}/{train_cfg['epochs']}] complete. Average Loss: {running_loss / len(train_loader):.4f}")
 
     # --- Evaluation Loop ---
-    print("\nStarting evaluation...")
+    logger.info("\nStarting evaluation...")
     model.eval()
     correct, total = 0, 0
     with torch.no_grad():
@@ -106,10 +89,25 @@ def train_and_evaluate(args):
             correct += (predicted == labels).sum().item()
 
     accuracy = 100 * correct / total
-    print(f'\n==================================================')
-    print(f'Test Accuracy for {args.model} on {args.dataset}: {accuracy:.2f}%')
-    print(f'==================================================')
+    logger.info(f'==================================================')
+    logger.info(f'Test Accuracy for {model_name} on {dataset_name}: {accuracy:.2f}%')
+    logger.info(f'==================================================')
 
 if __name__ == '__main__':
-    args = get_config()
-    train_and_evaluate(args)
+    logger = setup_logging()
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--dataset', type=str, help='Dataset to use (e.g., CIFAR10). Overrides config.')
+    parser.add_argument('--model', type=str, help='Model to use (e.g., resnet50). Overrides config.')
+    cli_args = parser.parse_args()
+
+    try:
+        config = load_config()
+
+        dataset_name = cli_args.dataset if cli_args.dataset else config['training']['default_dataset']
+        model_name = cli_args.model if cli_args.model else config['training']['default_model']
+
+        train_and_evaluate(config, dataset_name, model_name, logger)
+    except Exception as e:
+        logger.error(f"An error occurred during execution: {e}", exc_info=True)
+        raise
