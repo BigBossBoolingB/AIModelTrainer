@@ -48,8 +48,9 @@ acural_recursion:
     initial_pool_size: 1000
     epochs_per_iteration: 2
     max_iterations: 4
-    analysis_pool_size: 10000
+    analysis_pool_size: 2000
     entropy_threshold: 2.0
     high_loss_k_percent: 10
     uniqueness_n_clusters: 50
     uniqueness_similarity_threshold: 0.98
+    baseline_accuracy: 93.21

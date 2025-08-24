@@ -185,6 +185,7 @@ def run_acural_recursion(config, dataset_name, model_name, logger):
     logger.info(f'\n==================================================')
     logger.info(f'Final Test Accuracy for {model_name} on {dataset_name}: {final_accuracy:.2f}%')
     logger.info(f'Using {len(pool_indices)} / {len(full_train_dataset)} training samples.')
+    logger.info(f"Target Baseline Accuracy was: {acural_cfg.get('baseline_accuracy', 'N/A')}%")
     logger.info(f'==================================================')
 
 if __name__ == '__main__':

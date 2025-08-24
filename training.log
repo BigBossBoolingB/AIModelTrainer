@@ -1,0 +1,14 @@
+2025-08-23 23:13:41 - INFO - --- Starting Acural Recursion for CIFAR10 with model resnet50 ---
+2025-08-23 23:13:41 - INFO - Using device: cpu
+2025-08-23 23:13:58 - INFO - Initial pool size: 1000, Candidate pool size: 49000
+2025-08-23 23:13:58 - INFO -
+--- Iteration 1/4 ---
+2025-08-23 23:13:58 - INFO - Training on current pool of 1000 samples...
+2025-08-23 23:17:07 - INFO - Analyzing a random subset of 10000 candidates...
+2025-08-23 23:20:06 - INFO - --- Starting Acural Recursion for CIFAR10 with model resnet50 ---
+2025-08-23 23:20:06 - INFO - Using device: cpu
+2025-08-23 23:20:21 - INFO - Initial pool size: 1000, Candidate pool size: 49000
+2025-08-23 23:20:21 - INFO -
+--- Iteration 1/4 ---
+2025-08-23 23:20:21 - INFO - Training on current pool of 1000 samples...
+2025-08-23 23:23:29 - INFO - Analyzing a random subset of 2000 candidates...
